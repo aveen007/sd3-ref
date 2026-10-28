@@ -266,4 +266,7 @@ def main(prompt=PROMPT, width=WIDTH, height=HEIGHT, steps=STEPS, cfg_scale=CFG_S
     inferencer.load(model, vae, shift)
     inferencer.gen_image(prompt, width, height, steps, cfg_scale, seed, output, init_image, denoise)
 
-fire.Fire(main)
+# VILIA BASELINE: keep the original entry point importable for GenEval generation.
+# fire.Fire(main)
+if __name__ == "__main__":
+    fire.Fire(main)
