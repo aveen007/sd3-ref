@@ -20,7 +20,7 @@ def parse_args():
     parser.add_argument("--model", default="models/t5xxl.safetensors")
     parser.add_argument(
         "--output",
-        default="sd3_t5_geneval_vocab1080_native_exact.pt",
+        default="sd3_t5_geneval_vocab1080_compact.pt",
     )
     parser.add_argument("--extra_tokens", type=int, default=1080)
     parser.add_argument("--seed", type=int, default=0)
@@ -188,23 +188,23 @@ def main(args):
     )
     max_length = int(lengths.max())
     input_ids = torch.zeros(len(texts), max_length, dtype=torch.int32)
-    attention_mask = torch.zeros(len(texts), max_length, dtype=torch.bool)
-    content_mask = torch.zeros_like(attention_mask)
-    special_tokens_mask = torch.ones_like(attention_mask)
+    model_attention_mask = torch.zeros(len(texts), max_length, dtype=torch.bool)
+    content_mask = torch.zeros_like(model_attention_mask)
+    special_tokens_mask = torch.ones_like(model_attention_mask)
     offset_mapping = torch.zeros(len(texts), max_length, 2, dtype=torch.int32)
     token_strings = []
 
     for index, item in enumerate(encoded):
         length = len(item["input_ids"])
         input_ids[index, :length] = torch.tensor(item["input_ids"], dtype=torch.int32)
-        attention_mask[index, :length] = True
+        model_attention_mask[index, :length] = True
         content_mask[index, :length] = torch.tensor(item["content_mask"])
         special_tokens_mask[index, :length] = torch.tensor(item["special_tokens_mask"])
         offset_mapping[index, :length] = torch.tensor(item["offsets"], dtype=torch.int32)
         token_strings.append(item["tokens"])
 
     row_offsets = torch.cat(
-        [torch.zeros(1, dtype=torch.int64), lengths.to(torch.int64).cumsum(0)]
+        [torch.zeros(1, dtype=torch.int64), content_lengths.to(torch.int64).cumsum(0)]
     )
     hidden_states = torch.empty(
         int(row_offsets[-1]),
@@ -235,7 +235,8 @@ def main(args):
         for local_index, prompt_index in enumerate(indices):
             start = int(row_offsets[prompt_index])
             end = int(row_offsets[prompt_index + 1])
-            hidden_states[start:end] = stored[local_index]
+            prompt_mask = content_mask[prompt_index, :length]
+            hidden_states[start:end] = stored[local_index, prompt_mask]
 
         norms = stored.float().norm(dim=-1)
         batch_content_mask = content_mask[indices, :length]
@@ -246,18 +247,18 @@ def main(args):
         if batch_index == 1 or batch_index % 25 == 0 or batch_index == len(batches):
             print(f"Encoded batch {batch_index}/{len(batches)}")
 
-    active_ids = input_ids[attention_mask].long()
+    active_ids = input_ids[content_mask].long()
     lookup_token_ids = torch.unique(active_ids, sorted=True)
     lookup_weight = model.transformer.get_input_embeddings().weight.detach()
     lookup_embeddings = lookup_weight[lookup_token_ids].to(torch.float16).cpu()
 
     artifact = {
-        "format_version": 1,
-        "kind": "sd3_t5_geneval_augmented_vocabulary_native_exact",
+        "format_version": 2,
+        "kind": "sd3_t5_geneval_augmented_vocabulary_compact",
         "target_model": "google/t5-v1_1-xxl",
         "text_encoder_model_id": "google/t5-v1_1-xxl",
         "target_repository": "Stability-AI/sd3-ref",
-        "target_representation": "final_contextual_t5_sequence_consumed_by_sd3",
+        "target_representation": "final_contextual_t5_content_and_eos_positions",
         "tokenizer_model_id": "google/t5-v1_1-xxl",
         "tokenizer_vocab_size": len(tokenizer),
         "storage_dtype": "float16",
@@ -269,12 +270,12 @@ def main(args):
         "eos_token_id": 1,
         "minimum_sequence_length": 77,
         "attention_mask_used_by_encoder": False,
-        "attention_mask_semantics": "all stored native positions are consumed by SD3",
+        "attention_mask_semantics": "stored content and EOS positions only",
         "conditioning_layout": {
             "clip_sequence": "77 x (CLIP-L 768 + CLIP-G 1280), right-padded to 4096",
             "t5_sequence": "native T5 sequence x 4096, appended after the CLIP sequence",
             "pooled_conditioning": "native CLIP-L pooled concatenated with native CLIP-G pooled",
-            "projected_component": "T5 sequence only",
+            "projected_component": "T5 content and EOS positions; native contextual padding is retained",
         },
         "evaluation_prompt_count": len(evaluation_prompts),
         "original_vocabulary_count": len(original_vocabulary),
@@ -295,13 +296,14 @@ def main(args):
         "token_strings": token_strings,
         "offset_mapping": offset_mapping,
         "special_tokens_mask": special_tokens_mask,
-        "attention_mask": attention_mask,
+        "attention_mask": content_mask,
         "content_mask": content_mask,
+        "model_attention_mask": model_attention_mask,
         "sequence_lengths": lengths,
         "content_lengths": content_lengths,
         "row_offsets": row_offsets,
         "Y_pred_active": hidden_states,
-        "conditioning_storage": "all_native_t5_positions_flattened",
+        "conditioning_storage": "content_and_eos_positions_only",
         "dense_shape": [len(texts), max_length, T5_CONFIG["d_model"]],
         "lookup_token_ids": lookup_token_ids.to(torch.int32),
         "lookup_embeddings": lookup_embeddings,
