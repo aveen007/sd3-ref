@@ -6,7 +6,8 @@
 # Also can have
 # - `sd3_vae.safetensors` (holds the VAE separately if needed)
 
-import torch, fire, math
+# import torch, fire, math
+import torch, math
 from safetensors import safe_open
 from other_impls import SDClipModel, SDXLClipG, T5XXLModel, SD3Tokenizer
 from sd3_impls import BaseModel, sample_euler, SDVAE, CFGDenoiser, SD3LatentFormat
@@ -269,4 +270,6 @@ def main(prompt=PROMPT, width=WIDTH, height=HEIGHT, steps=STEPS, cfg_scale=CFG_S
 # VILIA BASELINE: keep the original entry point importable for GenEval generation.
 # fire.Fire(main)
 if __name__ == "__main__":
+    import fire
+
     fire.Fire(main)
