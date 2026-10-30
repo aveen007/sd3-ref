@@ -1,14 +1,16 @@
 # SD3 Medium GenEval baseline
 
-| Metric | SD3 paper (~8B) | Native SD3 Medium | Projected T5 | Projected - native |
-|---|---:|---:|---:|---:|
-| Overall | 0.7400 | **0.71390** | **0.67814** | -0.03576 |
-| Single object | 0.9900 | 0.9969 | 1.0000 | +0.0031 |
-| Two objects | 0.9400 | 0.8586 | 0.8081 | -0.0505 |
-| Counting | 0.7200 | 0.6156 | 0.6562 | +0.0406 |
-| Colors | 0.8900 | 0.8723 | 0.8670 | -0.0053 |
-| Position | 0.3300 | 0.3350 | 0.2675 | -0.0675 |
-| Color attribution | 0.6000 | 0.6050 | 0.4700 | -0.1350 |
+| Metric | SD3 paper (~8B) | Native SD3 Medium | Projected T5 |
+|---|---:|---:|---:|
+| Overall GenEval | 0.7400 | **0.71390** | **0.67814** |
+| Correct images | - | 70.52% (1,560 / 2,212) | 66.50% (1,471 / 2,212) |
+| Correct prompts | - | 86.62% (479 / 553) | 84.81% (469 / 553) |
+| Single object | 0.9900 | 99.69% (319 / 320) | 100.00% (320 / 320) |
+| Two objects | 0.9400 | 85.86% (340 / 396) | 80.81% (320 / 396) |
+| Counting | 0.7200 | 61.56% (197 / 320) | 65.62% (210 / 320) |
+| Colors | 0.8900 | 87.23% (328 / 376) | 86.70% (326 / 376) |
+| Position | 0.3300 | 33.50% (134 / 400) | 26.75% (107 / 400) |
+| Color attribution | 0.6000 | 60.50% (242 / 400) | 47.00% (188 / 400) |
 
 Our run used SD3 Medium with 553 prompts, four images per prompt (2,212 images), 1024x1024, 28 steps, CFG 5, shift 3, and seeds 0-3. It achieved 70.52% correct images and 86.62% correct prompts.
 
