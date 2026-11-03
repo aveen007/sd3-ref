@@ -1,81 +1,63 @@
-# Stable Diffusion 3 Micro-Reference Implementation
+# SD3 with projected LLaVA conditioning
 
-Inference-only tiny reference implementation of SD3.
+This fork projects LLaVA text features into SD3 Medium's T5 conditioning space for GenEval. For the original setup and model instructions, see [README (base repo).md](README%20%28base%20repo%29.md).
 
-Contains code for the text encoders (OpenAI CLIP-L/14, OpenCLIP bigG, Google T5-XXL) (these models are all public), the VAE Decoder (similar to previous SD models, but 16-channels and no postquantconv step), and the core MM-DiT (entirely new).
+## Code map
 
-Everything you need to inference SD3 excluding the weights files.
+| Stage | File |
+|---|---|
+| Extract native SD3/T5 targets | [`extract_t5_embeddings.py`](extract_t5_embeddings.py) |
+| Extract LLaVA features and fit the projection on Kaggle | [`sd3-book.ipynb`](sd3-book.ipynb) |
+| Clean tracked copy of the Kaggle notebook | [`sd3-vlm-embeddings-for-image-generation.ipynb`](sd3-vlm-embeddings-for-image-generation.ipynb) |
+| Load and inject projected conditioning | [`geneval_generate.py`](geneval_generate.py) |
+| Recorded evaluation results | [`GENEVAL_BASELINE.md`](GENEVAL_BASELINE.md) |
 
-Note: this repo is an early reference lib meant to assist partner organizations in implementing SD3. For normal inference, use [Comfy](https://github.com/comfyanonymous/ComfyUI) or UIs based on it such as [Swarm](https://github.com/Stability-AI/StableSwarmUI).
+## Run
 
-### Install
+Install dependencies and place these weights in `models/`:
 
-```sh
-# Note: on windows use "python" not "python3"
-python3 -s -m venv venv
-source ./venv/bin/activate
-# or on windows: venv/scripts/activate
-python3 -s -m pip install -r requirements.txt
+- `clip_g.safetensors`
+- `clip_l.safetensors`
+- `t5xxl.safetensors`
+- `sd3_medium.safetensors`
+
+Get GenEval's `evaluation_metadata.jsonl` and `object_names.txt`, then extract the native T5 targets:
+
+```bash
+python extract_t5_embeddings.py path/to/evaluation_metadata.jsonl \
+  --vocabulary_file path/to/object_names.txt \
+  --extra_tokens 1080 \
+  --output sd3_t5_geneval_vocab1080_compact.pt
 ```
 
-### Test Usage
+Upload `sd3_t5_geneval_vocab1080_compact.pt` to Kaggle, update `SD3_TARGET_PATH` in `sd3-book.ipynb`, and run the notebook. It downloads `llava-hf/llava-1.5-7b-hf`, extracts the LLaVA embeddings, fits the projection, and writes:
 
-```sh
-# Generate a cat on ref model with default settings
-python3 -s sd3_infer.py
-# Generate a 1024 cat on SD3-8B
-python3 -s sd3_infer.py --width 1024 --height 1024 --shift 3 --model models/sd3_medium.safetensors --prompt "cute wallpaper art of a cat"
-# Or for parameter listing
-python3 -s sd3_infer.py --help
+- `sd3_llava_geneval_vocab1080_projector_token_scale.pt`
+- `sd3_llava_geneval_vocab1080_projected_compact_token_scale.pt`
+
+Download the projected compact file and place it in the repository root. The evaluated file is already present there.
+
+Generate the matched native and projected GenEval images:
+
+```bash
+python geneval_generate.py path/to/evaluation_metadata.jsonl \
+  --outdir geneval_sd3_native
+
+python geneval_generate.py path/to/evaluation_metadata.jsonl \
+  --outdir geneval_sd3_projected \
+  --projected_conditioning sd3_llava_geneval_vocab1080_projected_compact_token_scale.pt
 ```
 
-Images will be output to `output.png` by default
+`geneval_generate.py` loads the projected file through `--projected_conditioning` and replaces the active T5 content/EOS states while retaining native CLIP conditioning and contextual T5 padding. Score both output directories with [GenEval](https://github.com/djghosh13/geneval).
 
-### File Guide
+## Results
 
-- `sd3_infer.py` - entry point, review this for basic usage of diffusion model and the triple-tenc cat
-- `sd3_impls.py` - contains the wrapper around the MMDiT and the VAE
-- `other_impls.py` - contains the CLIP model, the T5 model, and some utilities
-- `mmdit.py` - contains the core of the MMDiT itself
-- folder `models` with the following files (download separately):
-    - `clip_g.safetensors` (openclip bigG, same as SDXL, can grab a public copy)
-    - `clip_l.safetensors` (OpenAI CLIP-L, same as SDXL, can grab a public copy)
-    - `t5xxl.safetensors` (google T5-v1.1-XXL, can grab a public copy)
-    - `sd3_medium.safetensors` (or whichever main MMDiT model file)
+Matched settings: 553 prompts, four images per prompt, 1024x1024, 28 steps, CFG 5, shift 3, seeds 0-3.
 
-### Code Origin
+| Metric | Native SD3 Medium | Projected T5 |
+|---|---:|---:|
+| Correct images | 70.52% | 66.50% |
+| Correct prompts | 86.62% | 84.81% |
+| Overall GenEval | **0.71390** | **0.67814** |
 
-The code included here originates from:
-- Stability AI internal research code repository (MM-DiT)
-- Public Stability AI repositories (eg VAE)
-- Some unique code for this reference repo written by Alex Goodwin for Stability AI
-- Some code from ComfyUI internal Stability impl of SD3 (for some code corrections and handlers)
-- HuggingFace and upstream providers (for sections of CLIP/T5 code)
-
-### Legal
-
-MIT License
-
-Copyright (c) 2024 Stability AI
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-#### Note
-
-Some code in `other_impls` originates from HuggingFace and is subject to [the HuggingFace Transformers Apache2 License](https://github.com/huggingface/transformers/blob/main/LICENSE)
+See [`GENEVAL_BASELINE.md`](GENEVAL_BASELINE.md) for the complete category breakdown.
