@@ -13,6 +13,9 @@ proj_vocab=vocab[:15000]
 
 # load model weights
 model = T5XXLModel(T5_CONFIG, device="cuda:0", dtype=torch.float16).eval()
+model.transformer.encoder.block[0].layer[0].SelfAttention.relative_attention_bias.to(
+    dtype=torch.float16
+)
 with safe_open("models/t5xxl.safetensors", framework="pt", device="cpu") as f:
     load_into(f, model.transformer, "", "cuda:0", torch.float16)
 
