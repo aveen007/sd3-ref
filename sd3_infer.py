@@ -183,6 +183,8 @@ class SD3Inferencer:
 
     def get_cond(self, prompt):
         print("Encode prompt...")
+
+        #here I should get those same prompts being loaded for evaluation
         tokens = self.tokenizer.tokenize_with_weights(prompt)
         l_out, l_pooled = self.clip_l.model.encode_token_weights(tokens["l"])
         g_out, g_pooled = self.clip_g.model.encode_token_weights(tokens["g"])
