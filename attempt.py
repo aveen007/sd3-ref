@@ -8,7 +8,8 @@ from sd3_infer import T5_CONFIG, load_into
 tok = AutoTokenizer.from_pretrained("google/t5-v1_1-xxl")
 vocab = sorted(tok.get_vocab().items(), key=lambda x: x[1])  # (token, ID)
 print(len(vocab), vocab[:100])
-proj_vocab=vocab[:15000]
+# proj_vocab=vocab[:15000]
+proj_vocab=vocab
 
 
 # load model weights
