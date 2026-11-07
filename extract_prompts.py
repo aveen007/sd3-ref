@@ -1,9 +1,7 @@
-from scipy.fftpack import shift
 import torch
 from safetensors import safe_open
 from other_impls import T5XXLModel, T5XXLTokenizer
-from sd3_infer import T5_CONFIG, load_into,SD3Inferencer
-
+from sd3_infer import T5_CONFIG, load_into
 
 
 # Load the SD3 T5-XXL encoder weights.
@@ -23,20 +21,22 @@ data = torch.load(
 )
 prompts = data["prompt_texts"]
 tokenizer = T5XXLTokenizer()
-inferencer = SD3Inferencer()
-inferencer.load("models/sd3_medium.safetensors", None, 3.0)
-negative_conditioning = inferencer.get_cond("")
+
 # Encode each complete prompt with T5 and save its token-level hidden states.
 embeddings = []
 with torch.inference_mode():
     for prompt in prompts:
-       
-        embeddings.append(inferencer.get_cond(prompt))
-        print(f"Encoded prompt: {prompt}", flush=True)
-        print(f"Hidden shape: {hidden[0].shape}", flush=True)
-        print(f"Hidden dtype: {hidden[0].dtype}", flush=True)
-        print(f"Hidden 0: {hidden[0]}", flush=True)
-        print(f"Hidden 1: {hidden[0].half}", flush=True)
+        hidden, _ = model.encode_token_weights(tokenizer.tokenize_with_weights(prompt))
+        embeddings.append(hidden[0].half().cpu())
+        # print(f"Encoded prompt: {prompt}", flush=True)
+        # print(f"Hidden shape: {hidden[0].shape}", flush=True)
+        # print(f"Hidden dtype: {hidden[0].dtype}", flush=True)
+        # print(f"Hidden 0: {hidden[0]}", flush=True)
+        # print(f"Hidden 1: {hidden[0].half}", flush=True)
+        print("T5 embedding-table norm:",
+            model.transformer.encoder.embed_tokens.weight.float().norm().item())
+        print("Hidden max abs:", hidden.float().abs().max().item(),
+            "nonzero:", torch.count_nonzero(hidden).item())
 
 torch.save(
     {"prompt_texts": prompts, "embeddings": embeddings},
