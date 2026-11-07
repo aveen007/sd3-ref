@@ -28,6 +28,11 @@ with torch.inference_mode():
     for prompt in prompts:
         hidden, _ = model.encode_token_weights(tokenizer.tokenize_with_weights(prompt))
         embeddings.append(hidden[0].half().cpu())
+        print(f"Encoded prompt: {prompt}", flush=True)
+        print(f"Hidden shape: {hidden[0].shape}", flush=True)
+        print(f"Hidden dtype: {hidden[0].dtype}", flush=True)
+        print(f"Hidden 0: {hidden[0]}", flush=True)
+        print(f"Hidden 1: {hidden[0].half}", flush=True)
 
 torch.save(
     {"prompt_texts": prompts, "embeddings": embeddings},
