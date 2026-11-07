@@ -27,29 +27,8 @@ with torch.inference_mode():
         # print(f"Encoded prompt: {prompt}", flush=True)
         # print(f"Hidden shape: {hidden[0].shape}", flush=True)
         # print(f"Hidden dtype: {hidden[0].dtype}", flush=True)
-        # print(f"Hidden 0: {hidden[0]}", flush=True)
-        print(f"Hidden 1: {hidden[0].half}", flush=True)
-        pairs = tokenizer.tokenize_with_weights(prompts[0])[0]
-        device = model.transformer.encoder.embed_tokens.weight.device
-        ids = torch.tensor([[token_id for token_id, _ in pairs]], device=device)
-
-        print("Prompt:", repr(prompts[0]))
-        print("First token IDs:", ids[0, :25].tolist())
-        print("Non-padding IDs:", int((ids != 0).sum()))
-
-        x = model.transformer.encoder.embed_tokens(ids)
-        print("After embedding:", x.float().norm().item(), x.float().abs().max().item())
-
-        past_bias = None
-        for i, block in enumerate(model.transformer.encoder.block):
-            x, past_bias = block(x, past_bias)
-            if i in (0, 1, 23):
-                print(f"After block {i}:", x.float().norm().item(),
-                    x.float().abs().max().item())
-
-        x = model.transformer.encoder.final_layer_norm(x)
-        print("After final norm:", x.float().norm().item(),
-            x.float().abs().max().item())
+        print(f"Hidden 0: {hidden[0]}", flush=True)
+        
 torch.save(
     {"prompt_texts": prompts, "embeddings": embeddings},
     "geneval_t5_prompt_embeddings.pt",
