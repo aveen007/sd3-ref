@@ -5,14 +5,10 @@ from sd3_infer import T5_CONFIG, load_into
 
 
 # Load the SD3 T5-XXL encoder weights.
-model = T5XXLModel(T5_CONFIG, device="cuda:0", dtype=torch.float16).eval()
-model.transformer.encoder.embed_tokens.to(dtype=torch.float16)
-model.transformer.encoder.block[0].layer[0].SelfAttention.relative_attention_bias.to(
-    dtype=torch.float16
-)
-with safe_open("models/t5xxl.safetensors", framework="pt", device="cpu") as f:
-    load_into(f, model.transformer, "", "cuda:0", torch.float16)
+model = T5XXLModel(T5_CONFIG, device="cpu", dtype=torch.float32).eval()
 
+with safe_open("models/t5xxl.safetensors", framework="pt", device="cpu") as f:
+    load_into(f, model.transformer, "", "cpu", torch.float32)
 # Use the prompts saved in the GenEval conditioning artifact.
 data = torch.load(
     "sd3_llava_geneval_vocab1080_projected_compact_token_scale.pt",
@@ -32,7 +28,7 @@ with torch.inference_mode():
         # print(f"Hidden shape: {hidden[0].shape}", flush=True)
         # print(f"Hidden dtype: {hidden[0].dtype}", flush=True)
         # print(f"Hidden 0: {hidden[0]}", flush=True)
-        # print(f"Hidden 1: {hidden[0].half}", flush=True)
+        print(f"Hidden 1: {hidden[0].half}", flush=True)
         pairs = tokenizer.tokenize_with_weights(prompts[0])[0]
         device = model.transformer.encoder.embed_tokens.weight.device
         ids = torch.tensor([[token_id for token_id, _ in pairs]], device=device)
