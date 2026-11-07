@@ -12,17 +12,11 @@ print(len(vocab), vocab[:100])
 proj_vocab=vocab
 
 
-# load model weights
-model = T5XXLModel(T5_CONFIG, device="cuda:0", dtype=torch.float16).eval()
-
-model.transformer.encoder.embed_tokens.to(dtype=torch.float16)
-model.transformer.encoder.block[0].layer[0].SelfAttention.relative_attention_bias.to(
-    dtype=torch.float16
-)
+# Load the SD3 T5-XXL encoder weights.
+model = T5XXLModel(T5_CONFIG, device="cpu", dtype=torch.float32).eval()
 
 with safe_open("models/t5xxl.safetensors", framework="pt", device="cpu") as f:
-    load_into(f, model.transformer, "", "cuda:0", torch.float16)
-
+    load_into(f, model.transformer, "", "cpu", torch.float32)
 # split for gpu usage
 
 ids = torch.tensor([i for _, i in proj_vocab])
