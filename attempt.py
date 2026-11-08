@@ -1,34 +1,67 @@
-from transformers import AutoTokenizer
+
 import torch
+import gc
 from safetensors import safe_open
+from tqdm.auto import tqdm
 from other_impls import T5XXLModel
 from sd3_infer import T5_CONFIG, load_into
 
-# Load the vocabulary from the T5-XXL tokenizer
-tok = AutoTokenizer.from_pretrained("google/t5-v1_1-xxl")
-vocab_all = sorted(tok.get_vocab().items(), key=lambda x: x[1])  # (token, ID)
-vocab=vocab_all[:5000]
-print(len(vocab), vocab[:100])
-# proj_vocab=vocab[:15000]
-proj_vocab=vocab
+assert torch.cuda.device_count() >= 2
 
-
-# Load the SD3 T5-XXL encoder weights.
-model = T5XXLModel(T5_CONFIG, device="cpu", dtype=torch.float32).eval()
+# Load in full precision on CPU
+model = T5XXLModel(
+    T5_CONFIG,
+    device="cpu",
+    dtype=torch.float32
+).eval()
 
 with safe_open("models/t5xxl.safetensors", framework="pt", device="cpu") as f:
     load_into(f, model.transformer, "", "cpu", torch.float32)
-# split for gpu usage
 
+# Split encoder across GPUs
+stack = model.transformer.encoder
+split = len(stack.block) // 2
+
+stack.embed_tokens.to("cuda:0")
+
+for i, block in enumerate(stack.block):
+    block.to("cuda:0" if i < split else "cuda:1")
+
+stack.final_layer_norm.to("cuda:1")
+
+# Transfer hidden states and attention bias at GPU boundary
+def move_to_gpu1(module, inputs):
+    x, bias = inputs
+    x = x.to("cuda:1")
+    if bias is not None:
+        bias = bias.to("cuda:1")
+    return (x, bias)
+
+hook = stack.block[split].register_forward_pre_hook(move_to_gpu1)
+
+gc.collect()
+torch.cuda.empty_cache()
+
+for i in range(2):
+    free, total = torch.cuda.mem_get_info(i)
+    print(f"GPU {i}: {free / 1024**3:.2f} GiB free")
+
+# Generate embeddings
 ids = torch.tensor([i for _, i in proj_vocab])
 parts = []
+
 with torch.inference_mode():
-    for batch in ids.split(8):
+    for batch in tqdm(ids.split(64)):
         h, _ = model(batch[:, None].tolist())
-        parts.append(h[:, 0].half().cpu())
+        parts.append(h[:, 0].float().cpu())
 
-# concat and save
-embeds = torch.cat(parts)
+embeds = torch.cat(parts, dim=0)
+
+assert torch.isfinite(embeds).all(), "NaN or Inf in embeddings"
+assert torch.count_nonzero(embeds).item() > 0
+
 torch.save(embeds, "t5_proj_vocab_embeds.pt")
-print(embeds.shape)
 
+print("Shape:", embeds.shape)
+print("Dtype:", embeds.dtype)
+print("Maximum:", embeds.abs().max().item())
