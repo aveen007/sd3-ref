@@ -1,67 +1,103 @@
-
-import torch
 import gc
-from safetensors import safe_open
+import torch
 from tqdm.auto import tqdm
+from transformers import AutoTokenizer
+from safetensors import safe_open
 from other_impls import T5XXLModel
 from sd3_infer import T5_CONFIG, load_into
 
-assert torch.cuda.device_count() >= 2
+# Keep the complete model and all saved embeddings in float32.
+tok = AutoTokenizer.from_pretrained("google/t5-v1_1-xxl")
+vocab = sorted(tok.get_vocab().items(), key=lambda item: item[1])[:5000]
+ids = torch.tensor([token_id for _, token_id in vocab], dtype=torch.long)
 
-# Load in full precision on CPU
-model = T5XXLModel(
-    T5_CONFIG,
-    device="cpu",
-    dtype=torch.float32
-).eval()
-
+model = T5XXLModel(T5_CONFIG, device="cpu", dtype=torch.float32).eval()
 with safe_open("models/t5xxl.safetensors", framework="pt", device="cpu") as f:
     load_into(f, model.transformer, "", "cpu", torch.float32)
-
-# Split encoder across GPUs
 stack = model.transformer.encoder
-split = len(stack.block) // 2
+assert len(stack.block) == 24, "Expected 24 SD3 T5-XXL encoder blocks"
 
-stack.embed_tokens.to("cuda:0")
+# Run six blocks per stage: 0-5 on GPU 0, 6-11 on GPU 1,
+# 12-17 on GPU 0, 18-23 on GPU 1. Offload each completed
+# stage back to CPU before loading the next one.
+BATCH_SIZE = 64
+STAGE_SIZE = 6
+VRAM_RESERVE_GIB = 2.5
 
-for i, block in enumerate(stack.block):
-    block.to("cuda:0" if i < split else "cuda:1")
-
-stack.final_layer_norm.to("cuda:1")
-
-# Transfer hidden states and attention bias at GPU boundary
-def move_to_gpu1(module, inputs):
-    x, bias = inputs
-    x = x.to("cuda:1")
-    if bias is not None:
-        bias = bias.to("cuda:1")
-    return (x, bias)
-
-hook = stack.block[split].register_forward_pre_hook(move_to_gpu1)
-
-gc.collect()
-torch.cuda.empty_cache()
-
-for i in range(2):
-    free, total = torch.cuda.mem_get_info(i)
-    print(f"GPU {i}: {free / 1024**3:.2f} GiB free")
-
-# Generate embeddings
-ids = torch.tensor([i for _, i in proj_vocab])
-parts = []
+def weight_bytes(modules):
+    return sum(p.numel() * p.element_size()
+               for m in modules for p in m.parameters())
 
 with torch.inference_mode():
-    for batch in tqdm(ids.split(64)):
-        h, _ = model(batch[:, None].tolist())
-        parts.append(h[:, 0].float().cpu())
+    batches = ids.split(BATCH_SIZE)
+    hidden = [stack.embed_tokens(batch[:, None]).cpu() for batch in batches]
+    biases = [None] * len(hidden)
 
-embeds = torch.cat(parts, dim=0)
+    for start in range(0, len(stack.block), STAGE_SIZE):
+        end = min(start + STAGE_SIZE, len(stack.block))
+        blocks = list(stack.block[start:end])
+        gpu_index = (start // STAGE_SIZE) % 2
+        dev = torch.device(f"cuda:{gpu_index}")
 
-assert torch.isfinite(embeds).all(), "NaN or Inf in embeddings"
-assert torch.count_nonzero(embeds).item() > 0
+        torch.cuda.empty_cache()
+        needed = weight_bytes(blocks)
+        free, _ = torch.cuda.mem_get_info(gpu_index)
+        reserve = int(VRAM_RESERVE_GIB * 1024**3)
+        if free < needed + reserve:
+            print(f"Stage {start}:{end}: insufficient free GPU {gpu_index} memory; using CPU")
+            dev = torch.device("cpu")
+        else:
+            print(f"Stage {start}:{end}: {dev}; weights {needed/1024**3:.2f} GiB; "
+                  f"free {free/1024**3:.2f} GiB")
+
+        try:
+            for block in blocks:
+                block.to(dev)
+        except torch.cuda.OutOfMemoryError:
+            print("GPU transfer ran out of memory; retrying stage on CPU")
+            for block in blocks:
+                block.cpu()
+            torch.cuda.empty_cache()
+            dev = torch.device("cpu")
+
+        def run_stage(where):
+            outputs, out_biases = [], []
+            with torch.inference_mode():
+                for h_cpu, bias_cpu in tqdm(zip(hidden, biases), total=len(hidden),
+                                            desc=f"Blocks {start}-{end-1} ({where})"):
+                    h = h_cpu.to(where)
+                    bias = bias_cpu.to(where) if bias_cpu is not None else None
+                    for block in blocks:
+                        h, bias = block(h, bias)
+                    outputs.append(h.cpu())
+                    out_biases.append(bias.cpu() if bias is not None else None)
+            return outputs, out_biases
+
+        try:
+            next_hidden, next_biases = run_stage(dev)
+        except torch.cuda.OutOfMemoryError:
+            print("GPU stage ran out of memory; retrying stage on CPU")
+            for block in blocks:
+                block.cpu()
+            gc.collect()
+            torch.cuda.empty_cache()
+            next_hidden, next_biases = run_stage(torch.device("cpu"))
+
+        for block in blocks:
+            block.cpu()
+        del blocks, hidden, biases
+        hidden, biases = next_hidden, next_biases
+        del next_hidden, next_biases
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    # Matches T5Stack.forward's final layer normalization.
+    embeds = torch.cat([stack.final_layer_norm(h)[:, 0] for h in hidden], dim=0)
+
+assert embeds.dtype == torch.float32
+assert embeds.shape == (len(vocab), T5_CONFIG["d_model"])
+assert torch.isfinite(embeds).all(), "NaN/Inf detected"
+assert torch.count_nonzero(embeds).item() > 0, "All-zero embeddings detected"
 
 torch.save(embeds, "t5_proj_vocab_embeds.pt")
-
-print("Shape:", embeds.shape)
-print("Dtype:", embeds.dtype)
-print("Maximum:", embeds.abs().max().item())
+print("Saved", embeds.shape, embeds.dtype, "to t5_proj_vocab_embeds.pt")
