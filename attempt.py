@@ -17,10 +17,17 @@ with safe_open("models/t5xxl.safetensors", framework="pt", device="cpu") as f:
 stack = model.transformer.encoder
 assert len(stack.block) == 24, "Expected 24 SD3 T5-XXL encoder blocks"
 
+# Match native SD3 T5 conditioning: token, EOS, then unmasked PAD tokens.
+EOS_TOKEN_ID = 1
+PAD_TOKEN_ID = 0
+SEQUENCE_LENGTH = 77
+AUGMENTED_EMBEDDINGS_PATH = "t5_augmented_embeddings.pt"
+OUTPUT_PATH = "t5_proj_vocab_embeds_sd3_native_77.pt"
+
 # Run six blocks per stage: 0-5 on GPU 0, 6-11 on GPU 1,
 # 12-17 on GPU 0, 18-23 on GPU 1. Offload each completed
 # stage back to CPU before loading the next one.
-BATCH_SIZE = 64
+BATCH_SIZE = 8
 STAGE_SIZE = 6
 VRAM_RESERVE_GIB = 2.5
 
@@ -28,9 +35,25 @@ def weight_bytes(modules):
     return sum(p.numel() * p.element_size()
                for m in modules for p in m.parameters())
 
-with torch.inference_mode():
-    batches = ids.split(BATCH_SIZE)
-    hidden = [stack.embed_tokens(batch[:, None]).cpu() for batch in batches]
+
+def make_sd3_input_ids(batch_ids):
+    input_ids = torch.full(
+        (len(batch_ids), SEQUENCE_LENGTH),
+        PAD_TOKEN_ID,
+        dtype=torch.long,
+    )
+    input_ids[:, 0] = batch_ids
+    input_ids[:, 1] = EOS_TOKEN_ID
+    return input_ids
+
+
+@torch.inference_mode()
+def extract_embeddings(token_ids, description):
+    batches = token_ids.split(BATCH_SIZE)
+    hidden = [
+        stack.embed_tokens(make_sd3_input_ids(batch)).cpu()
+        for batch in batches
+    ]
     biases = [None] * len(hidden)
 
     for start in range(0, len(stack.block), STAGE_SIZE):
@@ -64,7 +87,8 @@ with torch.inference_mode():
             outputs, out_biases = [], []
             with torch.inference_mode():
                 for h_cpu, bias_cpu in tqdm(zip(hidden, biases), total=len(hidden),
-                                            desc=f"Blocks {start}-{end-1} ({where})"):
+                                            desc=(f"{description}: blocks "
+                                                  f"{start}-{end-1} ({where})")):
                     h = h_cpu.to(where)
                     bias = bias_cpu.to(where) if bias_cpu is not None else None
                     for block in blocks:
@@ -92,12 +116,47 @@ with torch.inference_mode():
         torch.cuda.empty_cache()
 
     # Matches T5Stack.forward's final layer normalization.
-    embeds = torch.cat([stack.final_layer_norm(h)[:, 0] for h in hidden], dim=0)
+    result = torch.cat([stack.final_layer_norm(h)[:, 0] for h in hidden], dim=0)
+    del hidden, biases
+    gc.collect()
+    return result
+
+
+# Validate native single-token construction before extracting all 5,000 rows.
+validation_ids = torch.arange(4, 260, dtype=torch.long)
+augmented = torch.load(AUGMENTED_EMBEDDINGS_PATH, map_location="cpu")
+reference_ids = augmented["aug_rows"][::2].long()
+reference_embeddings = augmented["Y_aug"][::2].float()
+
+assert torch.equal(reference_ids, validation_ids), (
+    "Augmented single-token rows do not correspond to token IDs 4-259"
+)
+assert reference_embeddings.shape == (len(validation_ids), T5_CONFIG["d_model"])
+
+validation_embeddings = extract_embeddings(validation_ids, "Validation")
+assert reference_embeddings.shape == validation_embeddings.shape
+
+cosine = torch.nn.functional.cosine_similarity(
+    validation_embeddings,
+    reference_embeddings,
+    dim=1,
+)
+print(
+    "Validation cosine similarity: "
+    f"mean={cosine.mean().item():.8f}, min={cosine.min().item():.8f}"
+)
+if cosine.mean().item() < 0.9999 or cosine.min().item() < 0.999:
+    raise RuntimeError("Native SD3 sequence validation failed")
+
+del validation_embeddings, augmented, reference_embeddings, cosine
+gc.collect()
+
+embeds = extract_embeddings(ids, "Vocabulary")
 
 assert embeds.dtype == torch.float32
 assert embeds.shape == (len(vocab), T5_CONFIG["d_model"])
 assert torch.isfinite(embeds).all(), "NaN/Inf detected"
 assert torch.count_nonzero(embeds).item() > 0, "All-zero embeddings detected"
 
-torch.save(embeds, "t5_proj_vocab_embeds.pt")
-print("Saved", embeds.shape, embeds.dtype, "to t5_proj_vocab_embeds.pt")
+torch.save(embeds, OUTPUT_PATH)
+print("Saved", embeds.shape, embeds.dtype, "to", OUTPUT_PATH)
